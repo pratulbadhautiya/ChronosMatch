@@ -1,4 +1,5 @@
 
+import pytest
 from matching_engine import MatchingEngine
 
 
@@ -20,8 +21,6 @@ def test_normal_partial_fill():
     stats = engine.stats()
     assert stats["volume"] == 5
     assert stats["trades"] == 1
-
-    print("PASS: Normal partial fill")
 
 
 def test_capacity_slot_reused_after_match():
@@ -45,8 +44,6 @@ def test_capacity_slot_reused_after_match():
     assert stats["volume"] == 3
     assert stats["last_trade_price"] == 100
 
-    print("PASS: Capacity slot reused after matching")
-
 
 def test_full_capacity_without_match():
     engine = MatchingEngine(capacity=1)
@@ -56,21 +53,39 @@ def test_full_capacity_without_match():
     before_book = engine.snapshot()
     before_stats = engine.stats()
 
-    try:
+    with pytest.raises(OverflowError):
         engine.submit(1, 90, 5)
-    except OverflowError:
-        pass
-    else:
-        raise AssertionError("Expected OverflowError")
 
     assert engine.snapshot() == before_book
     assert engine.stats() == before_stats
 
-    print("PASS: Capacity error leaves state unchanged")
+
+def test_capacity_rejection_preserves_engine_state():
+    engine = MatchingEngine(capacity=1)
+
+    first = engine.submit(1, 100, 5)
+
+    before_book = engine.snapshot()
+    before_stats = engine.stats()
+
+    with pytest.raises(OverflowError):
+        engine.submit(1, 99, 2)
+
+    assert engine.snapshot() == before_book
+    assert engine.stats() == before_stats
+
+    # A rejected order must not consume an order ID.
+    second = engine.submit(-1, 100, 5)
+
+    assert second["order_id"] == first["order_id"] + 1
+    assert second["filled_quantity"] == 5
+    assert second["status"] == "FILLED"
 
 
 if __name__ == "__main__":
     test_normal_partial_fill()
     test_capacity_slot_reused_after_match()
     test_full_capacity_without_match()
-    print("\nAll capacity tests passed.")
+    test_capacity_rejection_preserves_engine_state()
+
+    print("All capacity tests passed.")
