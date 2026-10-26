@@ -6,3 +6,6 @@ build/
 *.csv
 *.exe
 *.egg-info/
+
+# Generated Cython C files
+matching_engine.c
