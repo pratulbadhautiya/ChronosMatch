@@ -1,4 +1,5 @@
 
+import pytest
 from ring_buffer import RingBuffer
 
 
@@ -122,6 +123,46 @@ def test_invalid_orders():
         buffer.close()
 
 
+def test_invalid_order_preserves_buffer_state():
+    buffer = RingBuffer(
+        path="test_ring_invalid_state.bin",
+        capacity=2
+    )
+
+    try:
+        # Insert a valid order first.
+        assert buffer.put(1, 100, 5) is True
+
+        # Invalid input must raise ValueError.
+        with pytest.raises(ValueError):
+            buffer.put(0, 200, 10)
+
+        # The original valid order must remain readable.
+        first = buffer.get()
+
+        assert first["sequence"] == 1
+        assert first["side"] == 1
+        assert first["price"] == 100
+        assert first["quantity"] == 5
+
+        # Invalid input must not consume a sequence number.
+        assert buffer.put(-1, 101, 3) is True
+
+        second = buffer.get()
+
+        assert second["sequence"] == 2
+        assert second["side"] == -1
+        assert second["price"] == 101
+        assert second["quantity"] == 3
+
+        # The buffer should now be empty.
+        assert buffer.get() is None
+
+        print("PASS: Invalid order preserves buffer state")
+    finally:
+        buffer.close()
+
+
 if __name__ == "__main__":
     tests = [
         test_empty_buffer,
@@ -130,6 +171,7 @@ if __name__ == "__main__":
         test_sequence_numbers,
         test_slot_reuse,
         test_invalid_orders,
+        test_invalid_order_preserves_buffer_state,
     ]
 
     for test in tests:
