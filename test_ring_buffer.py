@@ -108,15 +108,8 @@ def test_invalid_orders():
         ]
 
         for side, price, quantity in invalid_orders:
-            try:
+            with pytest.raises(ValueError):
                 buffer.put(side, price, quantity)
-            except ValueError:
-                continue
-            else:
-                raise AssertionError(
-                    f"Invalid order accepted: "
-                    f"side={side}, price={price}, quantity={quantity}"
-                )
 
         print("PASS: Invalid-order validation")
     finally:
@@ -130,10 +123,8 @@ def test_invalid_order_preserves_buffer_state():
     )
 
     try:
-        # Insert a valid order first.
         assert buffer.put(1, 100, 5) is True
 
-        # Invalid input must raise ValueError.
         with pytest.raises(ValueError):
             buffer.put(0, 200, 10)
 
@@ -155,10 +146,54 @@ def test_invalid_order_preserves_buffer_state():
         assert second["price"] == 101
         assert second["quantity"] == 3
 
-        # The buffer should now be empty.
         assert buffer.get() is None
 
         print("PASS: Invalid order preserves buffer state")
+    finally:
+        buffer.close()
+
+
+def test_invalid_capacity_rejected():
+    invalid_capacities = [0, -1, 1.5, True, "2"]
+
+    for capacity in invalid_capacities:
+        with pytest.raises(ValueError):
+            RingBuffer(
+                path=f"test_invalid_capacity_{str(capacity)}.bin",
+                capacity=capacity
+            )
+
+    print("PASS: Invalid capacity validation")
+
+
+def test_invalid_numeric_values_rejected():
+    buffer = RingBuffer(
+        path="test_ring_numeric_validation.bin",
+        capacity=2
+    )
+
+    try:
+        invalid_orders = [
+            (1, True, 5),
+            (1, 100, False),
+            (1, 1.5, 5),
+            (1, 100, 2.5),
+            (1, 2**63, 5),
+            (1, 100, 2**63),
+        ]
+
+        for side, price, quantity in invalid_orders:
+            with pytest.raises(ValueError):
+                buffer.put(side, price, quantity)
+
+        # Invalid orders must not consume capacity or sequence numbers.
+        assert buffer.put(1, 100, 5) is True
+
+        first = buffer.get()
+        assert first["sequence"] == 1
+        assert buffer.get() is None
+
+        print("PASS: Invalid numeric values validation")
     finally:
         buffer.close()
 
@@ -172,6 +207,8 @@ if __name__ == "__main__":
         test_slot_reuse,
         test_invalid_orders,
         test_invalid_order_preserves_buffer_state,
+        test_invalid_capacity_rejected,
+        test_invalid_numeric_values_rejected,
     ]
 
     for test in tests:
