@@ -1,7 +1,11 @@
+
 import importlib.machinery
 import importlib.metadata
 import platform
 import threading
+import time
+from collections import deque
+from datetime import datetime, timezone
 from typing import Literal
 
 import matching_engine as matching_engine_module
@@ -11,9 +15,19 @@ from pydantic import BaseModel, Field
 
 from matching_engine import MatchingEngine
 
-app = FastAPI(title="ChronosMatch Matching Engine API", version="1.0.0")
+
+app = FastAPI(
+    title="ChronosMatch Matching Engine API",
+    version="2.0.0",
+)
+
 engine = MatchingEngine(capacity=10000)
 engine_lock = threading.Lock()
+
+# Process-level telemetry. These values reset when the service restarts.
+engine_started_at = time.monotonic()
+orders_processed = 0
+recent_orders = deque(maxlen=50)
 
 
 app.add_middleware(
@@ -37,11 +51,24 @@ class OrderRequest(BaseModel):
     quantity: int = Field(gt=0, description="Positive whole-number quantity")
 
 
+def get_telemetry():
+    """Call while holding engine_lock."""
+    return {
+        **engine.stats(),
+        "orders_processed": orders_processed,
+        "recent_orders": list(recent_orders),
+        "engine_uptime_seconds": round(
+            time.monotonic() - engine_started_at, 2
+        ),
+    }
+
+
 @app.get("/")
 def root():
     return {
         "service": "ChronosMatch API",
         "status": "ok",
+        "version": "2.0.0",
         "docs": "/docs",
     }
 
@@ -73,7 +100,7 @@ def get_engine_info():
         cython_version = None
 
     with engine_lock:
-        current_stats = engine.stats()
+        current_stats = get_telemetry()
 
     return {
         "service": "chronosmatch",
@@ -90,7 +117,16 @@ def get_engine_info():
 @app.get("/api/stats")
 def get_stats():
     with engine_lock:
-        return engine.stats()
+        return get_telemetry()
+
+
+@app.get("/api/orders/recent")
+def get_recent_orders():
+    with engine_lock:
+        return {
+            "count": len(recent_orders),
+            "orders": list(recent_orders),
+        }
 
 
 @app.get("/api/orderbook")
@@ -98,12 +134,14 @@ def get_orderbook():
     with engine_lock:
         return {
             "orders": engine.snapshot(),
-            "stats": engine.stats(),
+            "stats": get_telemetry(),
         }
 
 
 @app.post("/api/orders")
 def submit_order(order: OrderRequest):
+    global orders_processed
+
     side_code = 1 if order.side == "BUY" else -1
 
     try:
@@ -113,13 +151,32 @@ def submit_order(order: OrderRequest):
                 order.price,
                 order.quantity,
             )
+
+            submitted_at = datetime.now(timezone.utc).isoformat()
+
+            order_record = {
+                "submitted_at": submitted_at,
+                "order_id": result["order_id"],
+                "side": order.side,
+                "price": order.price,
+                "quantity": order.quantity,
+                "filled_quantity": result["filled_quantity"],
+                "remaining_quantity": result["remaining_quantity"],
+                "status": result["status"],
+            }
+
+            orders_processed += 1
+            recent_orders.appendleft(order_record)
+
             return {
                 "order": result,
-                "stats": engine.stats(),
+                "stats": get_telemetry(),
                 "orders": engine.snapshot(),
             }
+
     except (ValueError, OverflowError, MemoryError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     except Exception as exc:
         # Keep internal implementation details out of the HTTP response.
         raise HTTPException(
