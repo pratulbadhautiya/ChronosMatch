@@ -1,10 +1,11 @@
-
 # matching_engine.pyx
 # Cython-based Price-Time Priority Matching Engine
 # Hardened capacity checks and memory allocation before matching.
+# Includes bounded trade execution history (latest 1000 executions).
 
 from libc.stdint cimport int64_t
 from libc.stdlib cimport malloc, free
+from collections import deque
 
 
 cdef struct OrderNode:
@@ -32,6 +33,9 @@ cdef class MatchingEngine:
     cdef int64_t trades
     cdef int64_t volume
 
+    cdef object trade_history
+    cdef int64_t next_trade_id
+
     def __cinit__(self, int capacity=10000):
         self.bids = NULL
         self.asks = NULL
@@ -45,6 +49,10 @@ cdef class MatchingEngine:
         self.last_trade_price = 0
         self.trades = 0
         self.volume = 0
+
+        # Keep only the latest 1000 executions.
+        self.trade_history = deque(maxlen=1000)
+        self.next_trade_id = 1
 
     def __dealloc__(self):
         cdef PriceLevel* level
@@ -84,6 +92,9 @@ cdef class MatchingEngine:
         cdef int64_t filled = 0
         cdef int64_t fill_qty
 
+        cdef int64_t buyer_order_id
+        cdef int64_t seller_order_id
+
         cdef int64_t simulated_remaining
         cdef int removed_orders = 0
 
@@ -108,7 +119,6 @@ cdef class MatchingEngine:
 
         # ---------------------------------------------------------
         # 1. Preflight the match without changing the order book.
-        #    Count how many resting orders would be completely removed.
         # ---------------------------------------------------------
         simulated_remaining = quantity
 
@@ -137,8 +147,7 @@ cdef class MatchingEngine:
             if simulated_remaining > 0:
                 level = level.next
 
-        # Reject before any trade or book mutation if the remainder
-        # cannot fit in the available order capacity.
+        # Reject before any trade or book mutation if capacity is full.
         if (
             simulated_remaining > 0
             and self.count - removed_orders >= self.capacity
@@ -150,7 +159,6 @@ cdef class MatchingEngine:
 
         # ---------------------------------------------------------
         # 2. Allocate memory before matching.
-        #    This avoids allocation failures after trades have begun.
         # ---------------------------------------------------------
         new_order = <OrderNode*>malloc(sizeof(OrderNode))
 
@@ -180,8 +188,7 @@ cdef class MatchingEngine:
             previous = own_level
             own_level = own_level.next
 
-        # A new level is needed only if the incoming order will rest
-        # and there is no existing level at its price.
+        # Allocate a new price level if the incoming order will rest.
         if simulated_remaining > 0 and (
             own_level == NULL or own_level.price != price
         ):
@@ -216,8 +223,28 @@ cdef class MatchingEngine:
             resting = level.head
 
             fill_qty = remaining
+
             if resting.quantity < fill_qty:
                 fill_qty = resting.quantity
+
+            # Identify buyer and seller order IDs.
+            if side == 1:
+                buyer_order_id = order_id
+                seller_order_id = resting.order_id
+            else:
+                buyer_order_id = resting.order_id
+                seller_order_id = order_id
+
+            # Store this individual execution.
+            self.trade_history.append({
+                "trade_id": self.next_trade_id,
+                "buy_order_id": buyer_order_id,
+                "sell_order_id": seller_order_id,
+                "price": level.price,
+                "quantity": fill_qty,
+            })
+
+            self.next_trade_id += 1
 
             remaining -= fill_qty
             resting.quantity -= fill_qty
@@ -252,8 +279,7 @@ cdef class MatchingEngine:
         if remaining > 0:
             new_order.quantity = remaining
 
-            # Re-find insertion position on the incoming side.
-            # The opposite-side matching above cannot alter this side.
+            # Re-find insertion position on incoming side.
             own_level = root[0]
             previous = NULL
 
@@ -271,7 +297,7 @@ cdef class MatchingEngine:
                 own_level = own_level.next
 
             if own_level != NULL and own_level.price == price:
-                # Append to the existing price level to preserve FIFO.
+                # Append to existing price level to preserve FIFO.
                 if own_level.tail == NULL:
                     own_level.head = new_order
                     own_level.tail = new_order
@@ -279,13 +305,12 @@ cdef class MatchingEngine:
                     own_level.tail.next = new_order
                     own_level.tail = new_order
 
-                # The spare level was not required after all.
                 if new_level != NULL:
                     free(new_level)
                     new_level = NULL
 
             else:
-                # Insert the preallocated price level in sorted order.
+                # Insert preallocated price level in sorted order.
                 new_level.next = own_level
 
                 if previous == NULL:
@@ -325,6 +350,9 @@ cdef class MatchingEngine:
             "status": status,
         }
 
+    # ---------------------------------------------------------
+    # ORDER BOOK SNAPSHOT
+    # ---------------------------------------------------------
     cpdef list snapshot(self):
         cdef list result = []
         cdef PriceLevel* level
@@ -366,6 +394,9 @@ cdef class MatchingEngine:
 
         return result
 
+    # ---------------------------------------------------------
+    # ENGINE STATISTICS
+    # ---------------------------------------------------------
     cpdef dict stats(self):
         return {
             "resting_orders": self.count,
@@ -373,3 +404,10 @@ cdef class MatchingEngine:
             "volume": self.volume,
             "last_trade_price": self.last_trade_price,
         }
+
+    # ---------------------------------------------------------
+    # TRADE EXECUTION HISTORY
+    # ---------------------------------------------------------
+    cpdef list get_trades(self):
+        """Return retained executions in chronological order."""
+        return list(self.trade_history)
