@@ -129,6 +129,22 @@ def get_recent_orders():
         }
 
 
+@app.get("/api/trades")
+def get_trades():
+    """
+    Return actual executed trades from the matching engine.
+
+    The engine retains up to 1000 trades in chronological order.
+    """
+    with engine_lock:
+        trades = engine.get_trades()
+
+        return {
+            "count": len(trades),
+            "trades": trades,
+        }
+
+
 @app.get("/api/orderbook")
 def get_orderbook():
     with engine_lock:
