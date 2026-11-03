@@ -99,3 +99,101 @@ def test_valid_order_updates_telemetry():
     assert recent["orders"][0]["side"] == "BUY"
     assert recent["orders"][0]["price"] == 987654321
     assert recent["orders"][0]["quantity"] == 1
+
+
+# Day 3: Trade History API Tests
+
+def test_trades_endpoint():
+    response = client.get("/api/trades")
+
+    assert response.status_code == 200
+
+    data = response.json()
+
+    assert "count" in data
+    assert "trades" in data
+    assert isinstance(data["count"], int)
+    assert isinstance(data["trades"], list)
+    assert data["count"] == len(data["trades"])
+
+
+def test_trade_history_records_actual_execution():
+    before = client.get("/api/trades").json()
+
+    previous_trade_ids = {
+        trade["trade_id"] for trade in before["trades"]
+    }
+
+    unique_price = 8765432101
+    quantity = 5
+
+    buy_response = client.post(
+        "/api/orders",
+        json={
+            "side": "BUY",
+            "price": unique_price,
+            "quantity": quantity,
+        },
+    )
+
+    assert buy_response.status_code == 200
+    buy_order = buy_response.json()["order"]
+
+    assert buy_order["status"] == "RESTING"
+
+    sell_response = client.post(
+        "/api/orders",
+        json={
+            "side": "SELL",
+            "price": unique_price,
+            "quantity": quantity,
+        },
+    )
+
+    assert sell_response.status_code == 200
+    sell_order = sell_response.json()["order"]
+
+    assert sell_order["status"] == "FILLED"
+    assert sell_order["filled_quantity"] == quantity
+
+    after = client.get("/api/trades")
+
+    assert after.status_code == 200
+
+    trades = after.json()["trades"]
+
+    new_trades = [
+        trade
+        for trade in trades
+        if trade["trade_id"] not in previous_trade_ids
+    ]
+
+    assert len(new_trades) == 1
+
+    trade = new_trades[0]
+
+    assert trade["buy_order_id"] == buy_order["order_id"]
+    assert trade["sell_order_id"] == sell_order["order_id"]
+    assert trade["price"] == unique_price
+    assert trade["quantity"] == quantity
+
+
+def test_trade_history_response_fields():
+    response = client.get("/api/trades")
+
+    assert response.status_code == 200
+
+    data = response.json()
+
+    for trade in data["trades"]:
+        assert "trade_id" in trade
+        assert "buy_order_id" in trade
+        assert "sell_order_id" in trade
+        assert "price" in trade
+        assert "quantity" in trade
+
+        assert isinstance(trade["trade_id"], int)
+        assert isinstance(trade["buy_order_id"], int)
+        assert isinstance(trade["sell_order_id"], int)
+        assert isinstance(trade["price"], int)
+        assert isinstance(trade["quantity"], int)
