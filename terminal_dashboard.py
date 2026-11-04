@@ -1,4 +1,3 @@
-
 import asyncio
 import random
 import time
@@ -18,10 +17,10 @@ console = Console()
 ENGINE_CAPACITY = 100_000
 TOTAL_ORDERS = 20_000
 UPDATE_INTERVAL = 0.15
+TRADE_HISTORY_LIMIT = 10
 
 engine = MatchingEngine(capacity=ENGINE_CAPACITY)
 recent_orders = deque(maxlen=12)
-recent_trades = deque(maxlen=10)
 
 metrics = {
     "submitted": 0,
@@ -79,7 +78,10 @@ def build_dashboard():
             str(ask[1]) if ask else "-",
         )
 
-    elapsed = max(time.perf_counter() - metrics["started"], 0.000001)
+    elapsed = max(
+        time.perf_counter() - metrics["started"],
+        0.000001,
+    )
     throughput = metrics["submitted"] / elapsed
 
     status = "COMPLETED" if metrics["finished"] else "RUNNING"
@@ -90,16 +92,33 @@ def build_dashboard():
         summary.add_column(ratio=1)
 
     summary.add_row(
-        Panel(f"[bold cyan]{metrics['submitted']:,}[/]\nOrders submitted"),
-        Panel(f"[bold green]{stats['trades']:,}[/]\nTrades executed"),
-        Panel(f"[bold yellow]{stats['volume']:,}[/]\nTraded quantity"),
-        Panel(f"[bold magenta]{throughput:,.0f}[/]\nOrders/sec"),
+        Panel(
+            f"[bold cyan]{metrics['submitted']:,}[/]\nOrders submitted"
+        ),
+        Panel(
+            f"[bold green]{stats['trades']:,}[/]\nTrades executed"
+        ),
+        Panel(
+            f"[bold yellow]{stats['volume']:,}[/]\nTraded quantity"
+        ),
+        Panel(
+            f"[bold magenta]{throughput:,.0f}[/]\nOrders/sec"
+        ),
     )
+
     summary.add_row(
-        Panel(f"[bold]{stats['resting_orders']:,}[/]\nResting orders"),
-        Panel(f"[bold]{stats['last_trade_price']:.2f}[/]\nLast trade price"),
-        Panel(f"[green]{metrics['buy_orders']:,}[/]\nBuy orders"),
-        Panel(f"[red]{metrics['sell_orders']:,}[/]\nSell orders"),
+        Panel(
+            f"[bold]{stats['resting_orders']:,}[/]\nResting orders"
+        ),
+        Panel(
+            f"[bold]{stats['last_trade_price']:.2f}[/]\nLast trade price"
+        ),
+        Panel(
+            f"[green]{metrics['buy_orders']:,}[/]\nBuy orders"
+        ),
+        Panel(
+            f"[red]{metrics['sell_orders']:,}[/]\nSell orders"
+        ),
     )
 
     order_table = Table(
@@ -107,11 +126,16 @@ def build_dashboard():
         box=box.SIMPLE,
         expand=True,
     )
+
     for name in ("Side", "Price", "Qty", "Filled", "Status"):
-        order_table.add_column(name, justify="right" if name != "Side" else "left")
+        order_table.add_column(
+            name,
+            justify="right" if name != "Side" else "left",
+        )
 
     for order in recent_orders:
         color = "green" if order["side"] == "BUY" else "red"
+
         order_table.add_row(
             f"[{color}]{order['side']}[/]",
             f"{order['price']:.2f}",
@@ -120,24 +144,33 @@ def build_dashboard():
             order["status"],
         )
 
+    # Fetch actual executions directly from the matching engine.
     trades_table = Table(
-        title="RECENT TRADE ACTIVITY",
+        title="ACTUAL ENGINE TRADE HISTORY",
         box=box.SIMPLE,
         expand=True,
     )
-    trades_table.add_column("Event")
+
+    trades_table.add_column("Trade ID", justify="right")
+    trades_table.add_column("Buyer Order ID", justify="right")
+    trades_table.add_column("Seller Order ID", justify="right")
     trades_table.add_column("Price", justify="right")
     trades_table.add_column("Quantity", justify="right")
 
-    if recent_trades:
-        for trade in recent_trades:
+    actual_trades = engine.get_trades()
+
+    if actual_trades:
+        # Display the latest executions first.
+        for trade in reversed(actual_trades[-TRADE_HISTORY_LIMIT:]):
             trades_table.add_row(
-                trade["event"],
+                str(trade["trade_id"]),
+                str(trade["buy_order_id"]),
+                str(trade["sell_order_id"]),
                 f"{trade['price']:.2f}",
                 str(trade["quantity"]),
             )
     else:
-        trades_table.add_row("Waiting for trades...", "-", "-")
+        trades_table.add_row("-", "-", "Waiting for trades...", "-", "-")
 
     footer = Text.from_markup(
         f"Status: [{status_style}]{status}[/]  |  "
@@ -148,7 +181,7 @@ def build_dashboard():
         Panel(
             "[bold cyan]CHRONOSMATCH[/]  "
             "[white]Matching Engine Simulator[/]\n"
-            "[dim]Simulated limit orders | Price-time matching[/]",
+            "[dim]Actual engine executions | Price-time matching[/]",
             border_style="cyan",
         ),
         summary,
@@ -183,14 +216,8 @@ async def run_simulation(live):
             "status": str(result["status"]),
         })
 
-        if result["filled_quantity"] > 0:
-            recent_trades.appendleft({
-                "event": f"{side_name} matched",
-                "price": price,
-                "quantity": result["filled_quantity"],
-            })
-
         now = time.perf_counter()
+
         if now - last_refresh >= UPDATE_INTERVAL:
             live.update(build_dashboard())
             last_refresh = now
@@ -200,6 +227,7 @@ async def run_simulation(live):
 
     metrics["elapsed"] = time.perf_counter() - metrics["started"]
     metrics["finished"] = True
+
     live.update(build_dashboard())
 
 
